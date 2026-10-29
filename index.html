@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow, noarchive" />
+<title>Stonechurch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=Gochi+Hand&family=Jersey+10&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; background: #000; }
+  #scgate { position: fixed; inset: 0; z-index: 2147483647; display: flex; align-items: center; justify-content: center; background: radial-gradient(ellipse at 50% 40%, #1a0605, #000 70%); font: 20px/1.3 VT323, ui-monospace, Menlo, monospace; color: #e8e2cf; transition: opacity 0.35s; }
+  #scgate.gone { opacity: 0; pointer-events: none; }
+  #scgate .box { width: min(360px, calc(100vw - 32px)); text-align: center; }
+  #scgate h1 { margin: 0 0 6px; font-weight: normal; font-size: 64px; line-height: 0.9; letter-spacing: 3px; color: #ff4a3a; text-shadow: 0 0 22px rgba(255, 60, 40, 0.4), 0 4px 0 #3a0806; }
+  #scgate h1 small { display: block; font-size: 22px; letter-spacing: 6px; color: #e8e2cf; text-shadow: none; }
+  #scgate p { margin: 14px 0; color: #8a7a6a; letter-spacing: 1px; }
+  #scgate form { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
+  #scgate input { font: inherit; font-size: 26px; text-align: center; letter-spacing: 6px; padding: 8px; color: #fff; background: #0b0b0b; border: 2px solid #3a2a24; border-radius: 4px; outline: none; }
+  #scgate input:focus { border-color: #7a1a14; }
+  #scgate button { font: inherit; font-size: 26px; letter-spacing: 3px; padding: 8px; color: #fff; background: #7a1a14; border: none; border-radius: 4px; cursor: pointer; }
+  #scgate button:disabled { opacity: 0.6; cursor: wait; }
+  #scgate .err { color: #ff6a5a; min-height: 1.3em; margin: 0; }
+  #scgate .bar { height: 4px; margin: 22px auto 0; width: 70%; background: #1a1210; border-radius: 2px; overflow: hidden; }
+  #scgate .bar i { display: block; height: 100%; width: 0; background: #7a1a14; transition: width 0.15s; }
+  #scgate [hidden] { display: none !important; }
+  @keyframes scshake { 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
+  #scgate form.bad { animation: scshake 0.25s 2; }
+</style>
+</head>
+<body>
+<div id="scgate">
+  <div class="box">
+    <h1><small>FIVE NIGHTS AT</small>STONECHURCH</h1>
+    <form id="scpin" hidden autocomplete="off">
+      <p>Crew only. Enter the PIN.</p>
+      <input id="scpinin" type="password" inputmode="text" autocomplete="current-password" aria-label="PIN" />
+      <button id="scgo" type="submit">CLOCK IN</button>
+      <p class="err" id="scerr"></p>
+    </form>
+    <div id="scwait"><p id="scmsg">Opening up…</p></div>
+    <div class="bar" id="scbar"><i></i></div>
+    <button id="scretry" type="button" hidden>TRY AGAIN</button>
+  </div>
+</div>
+<script>
+// The PIN gate and the game's loader. The game itself is one encrypted file (FILE): it starts downloading the moment
+// this page opens, while you type the PIN, and is kept in the browser afterwards, so a visit after the first doesn't
+// download it again until there's an update. The PIN is remembered in this browser for good once it's been typed.
+(() => {
+  const FILE = 'g/015af712c1b34558.bin', SALT = '604fe42d32341f81cdbdc99f9e176cf0', CHECK = 'dd366aec6754d461924cb8ff5d2df51f', CACHE = 'stonechurch-game';
+  /** Where the key from the PIN is kept (the same place the old gate kept it, so anyone it remembered stays in). */
+  const KEY = 'staticrypt_passphrase';
+  const $ = (id) => document.getElementById(id);
+  const T = (window.__scload = { start: Math.round(performance.now()) });
+  const mark = (k) => (T[k] = Math.round(performance.now()));
+  const hex = (b) => Array.from(new Uint8Array(b), (x) => x.toString(16).padStart(2, '0')).join('');
+  const unhex = (h) => new Uint8Array(h.match(/../g).map((x) => parseInt(x, 16)));
+  const enc = (s) => new TextEncoder().encode(s);
+  const store = {
+    get() { try { return localStorage.getItem(KEY); } catch (e) { return null; } },
+    set(v) { try { localStorage.setItem(KEY, v); localStorage.removeItem('staticrypt_expiration'); } catch (e) {} },
+    clear() { try { localStorage.removeItem(KEY); } catch (e) {} },
+  };
+
+  function fail(msg) {
+    $('scpin').hidden = true;
+    $('scwait').hidden = false;
+    $('scbar').hidden = true;
+    $('scmsg').textContent = msg;
+    $('scretry').hidden = false;
+  }
+  $('scretry').onclick = async () => {
+    try { await caches.delete(CACHE); } catch (e) {}
+    location.reload();
+  };
+  if (!window.crypto || !crypto.subtle || !window.DecompressionStream) return fail('This browser is too old to run the game. Update it (or try Chrome) and come back.');
+
+  // ---------- the game's file: from the browser's own copy if it has this version, or downloaded (with progress) ----------
+  const bar = $('scbar').firstElementChild;
+  const bytes = (async () => {
+    let cache = null;
+    try {
+      cache = await caches.open(CACHE);
+      const hit = await cache.match(FILE);
+      if (hit) {
+        const b = await hit.arrayBuffer();
+        T.cached = true;
+        mark('bytes');
+        return b;
+      }
+    } catch (e) { cache = null; }
+    const r = await fetch(FILE, { credentials: 'same-origin' });
+    if (r.status === 404) {
+      // (an old copy of this page, asking for a version that's been replaced: get the new page)
+      if (!sessionStorage.getItem('sc-reloaded')) {
+        sessionStorage.setItem('sc-reloaded', '1');
+        await fetch(location.pathname, { cache: 'reload' }).catch(() => {});
+        location.reload();
+        return new Promise(() => {});
+      }
+    }
+    if (!r.ok) throw new Error('download ' + r.status);
+    sessionStorage.removeItem('sc-reloaded');
+    const total = Number(r.headers.get('Content-Length')) || 0;
+    const reader = r.body.getReader();
+    const parts = [];
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+      got += value.length;
+      if (total) bar.style.width = Math.min(100, (got / total) * 100) + '%';
+    }
+    const buf = new Uint8Array(got);
+    let at = 0;
+    for (const p of parts) { buf.set(p, at); at += p.length; }
+    mark('bytes');
+    if (cache) {
+      // keep this version, and only this one
+      cache.put(FILE, new Response(buf, { headers: { 'Content-Type': 'application/octet-stream' } }))
+        .then(() => cache.keys())
+        .then((keys) => Promise.all(keys.filter((k) => !k.url.endsWith('/' + FILE)).map((k) => cache.delete(k))))
+        .catch(() => {});
+    }
+    return buf.buffer;
+  })();
+  bytes.catch(() => {});
+
+  // ---------- the PIN ----------
+  async function pbkdf2(pass, iterations, hash) {
+    const k = await crypto.subtle.importKey('raw', enc(pass), 'PBKDF2', false, ['deriveBits']);
+    return hex(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash, iterations, salt: enc(SALT) }, k, 256));
+  }
+  /** The key from the PIN, made the same way the old gate made it (so keys it remembered still work). */
+  const keyFor = async (pin) => pbkdf2(await pbkdf2(await pbkdf2(pin, 1000, 'SHA-1'), 14000, 'SHA-256'), 585000, 'SHA-256');
+  /** A fingerprint of the right key, so a wrong PIN gets told straight away instead of after the download. */
+  async function checkOf(h) {
+    const k = await crypto.subtle.importKey('raw', unhex(h), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    return hex(await crypto.subtle.sign('HMAC', k, enc('stonechurch'))).slice(0, 32);
+  }
+  async function good(h) {
+    try { return !!h && /^[0-9a-f]{64}$/.test(h) && (await checkOf(h)) === CHECK; } catch (e) { return false; }
+  }
+  function askPin(msg) {
+    $('scwait').hidden = true;
+    $('scpin').hidden = false;
+    $('scerr').textContent = msg || '';
+    setTimeout(() => $('scpinin').focus(), 0);
+  }
+  $('scpin').onsubmit = async (e) => {
+    e.preventDefault();
+    const pin = $('scpinin').value;
+    if (!pin) return;
+    $('scgo').disabled = true;
+    $('scgo').textContent = 'CHECKING…';
+    let h = null;
+    try { h = await keyFor(pin); } catch (e) {}
+    $('scgo').disabled = false;
+    $('scgo').textContent = 'CLOCK IN';
+    if (!(await good(h))) {
+      const f = $('scpin');
+      f.classList.remove('bad');
+      void f.offsetWidth;
+      f.classList.add('bad');
+      $('scerr').textContent = 'That’s not the PIN.';
+      $('scpinin').select();
+      return;
+    }
+    store.set(h);
+    openGame(h);
+  };
+
+  // ---------- opening the game ----------
+  async function openGame(h) {
+    $('scpin').hidden = true;
+    $('scwait').hidden = false;
+    $('scmsg').textContent = 'Opening up…';
+    let text;
+    try {
+      const buf = new Uint8Array(await bytes);
+      const key = await crypto.subtle.importKey('raw', unhex(h), 'AES-GCM', false, ['decrypt']);
+      const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf.subarray(0, 12) }, key, buf.subarray(12));
+      mark('decrypted');
+      text = await new Response(new Blob([plain]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+      mark('unpacked');
+    } catch (e) {
+      // (a copy kept from before that's gone bad: throw it away so trying again downloads it fresh)
+      try { await caches.delete(CACHE); } catch (e2) {}
+      return fail(navigator.onLine === false ? 'You’re offline. Connect to the internet and try again.' : 'The game didn’t download properly. Try again.');
+    }
+    const [css, body, js] = text.split('\u0000');
+    const st = document.createElement('style');
+    st.textContent = css;
+    document.head.append(st);
+    const gate = $('scgate');
+    document.body.innerHTML = body;
+    document.body.append(gate);
+    document.title = 'Five Nights at Stonechurch';
+    // The gate stays over the top until the game's finished starting up (a module script's load comes after it's run,
+    // by which time the game's put its title or the Discord login up), then fades out.
+    let broke = null;
+    const onErr = (e) => (broke = broke || e.message || 'error');
+    addEventListener('error', onErr);
+    const s = document.createElement('script');
+    s.type = 'module';
+    s.src = URL.createObjectURL(new Blob([js], { type: 'text/javascript' }));
+    s.onerror = () => fail('The game couldn’t start. Try again.');
+    s.onload = () => {
+      removeEventListener('error', onErr);
+      mark('up');
+      if (broke) return fail('The game hit a problem starting up. Try again.');
+      requestAnimationFrame(() => {
+        gate.classList.add('gone');
+        setTimeout(() => gate.remove(), 400);
+      });
+    };
+    mark('started');
+    document.body.append(s);
+  }
+
+  // a key remembered from before opens it straight away; anything else asks for the PIN
+  const saved = store.get();
+  good(saved).then((ok) => {
+    if (ok) return openGame(saved);
+    if (saved) store.clear();
+    askPin();
+  });
+})();
+</script>
+</body>
+</html>
